@@ -1,0 +1,32 @@
+# Proprietary CryptoPro / CAdES distributives
+*.deb
+*.rpm
+*.tgz
+*.tar.gz
+*.tar.xz
+*.zip
+
+# Certificates, private keys, containers, signatures
+*.cer
+*.crt
+*.csr
+*.der
+*.key
+*.pem
+*.pfx
+*.p12
+*.sgn
+*.sig
+*.p7s
+*.p7m
+*.crl
+
+# Local state and scratch files
+.env
+.env.*
+work/
+dist/
+tmp/
+logs/
+*.log
+
