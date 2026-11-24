@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/banner.png" alt="Электронная подпись на NixOS" width="100%">
+</p>
+
 # КриптоПро, Рутокен и браузеры на NixOS — набор для ИИ-агента
 
 Сборник знаний для настройки на **NixOS** электронной подписи на Рутокене:
@@ -57,6 +61,12 @@ install.sh             старый установщик «всё сразу» (
 NixOS 26.05 (unstable), GNOME, КриптоПро CSP 5.0.13003, CAdES 2.0.15700,
 Google Chrome 147, Chromium-Gost 150, Рутокен, КЭП от УЦ ФНС.
 Подробно — `docs/versions.md`.
+
+## Автор
+
+Олег Горский — AI-разработчик: агентные системы, веб-приложения, чат-боты.
+Пишу о том, что делаю, в Telegram-канале [@gorskytalk](https://t.me/gorskytalk).
+Другие проекты — в [профиле на GitHub](https://github.com/OlegGorsky).
 
 ## Лицензии
 
