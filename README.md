@@ -1,144 +1,66 @@
-# CryptoPro for NixOS
+# КриптоПро, Рутокен и браузеры на NixOS — набор для ИИ-агента
 
-Скрипт для установки КриптоПро CSP, CAdES Browser plug-in и связки с Google Chrome на NixOS.
+Сборник знаний для настройки на **NixOS** электронной подписи на Рутокене:
+КриптоПро CSP, ЭЦП Browser plug-in, **Google Chrome** (Точка Банк, Контур) и
+**Chromium-Gost** (ЛК ИП ФНС). Это не установщик «в одну кнопку», а инструкции,
+модули NixOS, скрипты и разбор реальных ошибок, по которым агент сам разберётся
+в вашей машине.
 
-Проект не заменяет официальную документацию КриптоПро. Он просто собирает в одном месте шаги, которые нужны на NixOS: распаковку официальных Linux-пакетов, настройку библиотек, `pcscd`, Chrome native messaging и проверку токена.
+## Как пользоваться
 
-## Что делает скрипт
+Дайте своему агенту (Claude Code, Codex и т. п.) задание:
 
-- ставит КриптоПро CSP из официального архива `linux-amd64_deb.tgz`;
-- ставит КриптоПро ЭЦП Browser plug-in / CAdES из архива `cades-linux-amd64.tar.gz`;
-- добавляет NixOS-модуль с обёртками для `cpconfig`, `csptest`, `certmgr`, `cryptcp`, `nmcades` и других команд КриптоПро;
-- включает `nix-ld`, нужные библиотеки и `pcscd`;
-- настраивает Chrome native messaging host для `ru.cryptopro.nmcades`;
-- подключает расширение CAdES для Google Chrome;
-- запускает `cryptopro-certprop`, чтобы сертификаты с токена подтягивались в пользовательское хранилище.
+> Склонируй https://github.com/OlegGorsky/cryptopro-for-nixos, прочитай AGENTS.md
+> и настрой мне ЭП: Chrome для Точки и Chromium-Gost для ЛК ИП ФНС.
 
-Скрипт рассчитан на Google Chrome. Firefox, Chromium, Yandex Browser, Edge и Контур.Плагин здесь не настраиваются.
+Агент начнёт с `AGENTS.md`, запустит диагностику `scripts/doctor.sh` (только
+чтение) и дальше пойдёт по нужным скиллам.
 
-## Что понадобится
+Что понадобится от вас:
 
-Перед запуском скачайте с официального сайта КриптоПро два архива для Linux x86_64:
+- архивы КриптоПро с cryptopro.ru (`linux-amd64_deb.tgz`, `cades-linux-amd64.tar.gz`) —
+  скачиваются после входа в личный кабинет;
+- лицензия КриптоПро CSP (или встроенная в сертификат), если демо-период закончился;
+- Рутокен с сертификатом и его PIN — PIN вводите только вы, в окне КриптоПро.
 
-- `linux-amd64_deb.tgz` - КриптоПро CSP 5.0;
-- `cades-linux-amd64.tar.gz` - КриптоПро ЭЦП Browser plug-in / CAdES.
+## Коротко о главном
 
-Положите архивы в `~/Загрузки`, `~/Downloads` или в папку, из которой запускаете скрипт.
+| Задача | Браузер | Ключевое |
+|---|---|---|
+| ЛК ИП / ФЛ / ЮЛ ФНС, вход по сертификату | **Chromium-Gost** | ГОСТ-TLS; Chrome его не умеет |
+| Точка Банк | **Google Chrome** | корень Минцифры в доверенных |
+| Контур | Google Chrome | Контур.Плагин |
 
-## Установка
+Подробнее — `docs/sites.md`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/OlegGorsky/cryptopro-for-nixos/main/install.sh | sudo bash
+## Что внутри
+
+```
+AGENTS.md              точка входа для агента: правила и карта
+skills/                пошаговые инструкции по темам (формат SKILL.md)
+  diagnostics/         с чего начинать при любой проблеме
+  cryptopro-nixos/     установка CSP и CAdES на NixOS
+  cryptopro-license/   лицензия: проверка, серийный номер
+  rutoken-certificates/ где лежит ЭЦП, контейнеры, PrivateKey Link
+  chrome-cades/        Chrome: плагин, Точка, Контур
+  chromium-gost/       Chromium-Gost для ЛК ФНС
+  mincifry-certs/      сертификаты Минцифры
+nixos/                 модули NixOS: cryptopro.nix, mincifry.nix, kontur-plugin.nix, chromium-gost-fhs.nix
+scripts/               doctor.sh, unpack-cryptopro.sh, install-chromium-gost.sh, add-mincifry-nss.sh
+certs/                 корень Минцифры (с отпечатком для сверки)
+docs/                  сайты↔браузеры, известные ошибки, версии, архитектура, источники
+install.sh             старый установщик «всё сразу» (оставлен для совместимости)
 ```
 
-Если архивы лежат в нестандартном месте:
+## Проверено на
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/OlegGorsky/cryptopro-for-nixos/main/install.sh \
-  | sudo env CSP_ARCHIVE=/path/to/linux-amd64_deb.tgz \
-             CADES_ARCHIVE=/path/to/cades-linux-amd64.tar.gz \
-             bash
-```
+NixOS 26.05 (unstable), GNOME, КриптоПро CSP 5.0.13003, CAdES 2.0.15700,
+Google Chrome 147, Chromium-Gost 150, Рутокен, КЭП от УЦ ФНС.
+Подробно — `docs/versions.md`.
 
-Если репозиторий уже склонирован:
+## Лицензии
 
-```bash
-sudo bash install.sh
-```
-
-Скрипт сначала проверяет текущую установку. Если находит более свежие локальные архивы, обновляет пакеты. Если установленная версия не старее найденной, повторно распаковывать пакеты не будет.
-
-## После установки
-
-Перезапустите Google Chrome и проверьте расширение:
-
-- `chrome://extensions`
-- `Extension for CAdES Browser Plugin`
-- ID: `pfhgbfnnjiafkhfdkmpiflachepdcjod`
-
-Chrome может попросить вручную включить расширение. Это нормально.
-
-Старый ID расширения КриптоПро `iifchhfnnmpdbibifmljnfjhpififfog` тоже разрешён в manifest для совместимости.
-
-## Проверка
-
-Для проверки без установки:
-
-```bash
-bash install.sh check
-```
-
-Проверка показывает:
-
-- NixOS ли это;
-- доступны ли команды КриптоПро;
-- видна ли лицензия CSP;
-- установлен ли Chrome native messaging manifest;
-- вставлен ли Рутокен;
-- видны ли контейнеры;
-- есть ли у сертификата связка с закрытым ключом.
-
-Если токен не вставлен, проверка отдельно покажет это в выводе.
-
-## Лицензия
-
-В официальных Linux-дистрибутивах КриптоПро CSP есть временная лицензия. Скрипт пытается включить её автоматически.
-
-Постоянный серийный номер вводится отдельно:
-
-```bash
-sudo cpconfig -license -set <серийный_номер>
-```
-
-Проверить текущую лицензию можно так:
-
-```bash
-cpconfig -license -view
-```
-
-## Сертификат с токена
-
-Если вставлен один Рутокен и в хранилище `uMy` ещё нет сертификата со связкой на закрытый ключ, скрипт попробует поставить сертификат из контейнера:
-
-```bash
-certmgr -inst -cont '<container>'
-```
-
-PIN вводится только в окне или терминале КриптоПро. В команду его передавать не нужно.
-
-## Обновления
-
-По умолчанию скрипт ищет архивы в:
-
-- текущей папке;
-- `~/Загрузки`;
-- `~/Downloads`.
-
-Можно передать прямые ссылки:
-
-```bash
-sudo CSP_URL='https://example.org/linux-amd64_deb.tgz' \
-     CADES_URL='https://example.org/cades-linux-amd64.tar.gz' \
-     bash install.sh
-```
-
-Если ссылка ведёт не на архив, а на страницу входа, скрипт остановится и попросит скачать файл вручную.
-
-Полезные переменные:
-
-```bash
-CSP_ARCHIVE=/path/to/linux-amd64_deb.tgz
-CADES_ARCHIVE=/path/to/cades-linux-amd64.tar.gz
-CSP_URL=https://...
-CADES_URL=https://...
-NO_REBUILD=1
-NO_INSTALL_CERT=1
-FORCE=1
-```
-
-## Полезные ссылки
-
-- Документация КриптоПро: <https://docs.cryptopro.ru/>
-- КриптоПро CSP 5.0 R4: <https://cpdn.cryptopro.ru/content/csp50r4/html/titul.html>
-- КриптоПро ЭЦП Browser plug-in: <https://www.cryptopro.ru/products/cades/plugin>
-- Новость КриптоПро об удалении старого расширения из Chrome Web Store: <https://www.cryptopro.ru/news/2025/02/ob-udalenii-rasshireniya-dlya-cryptopro-etsp-browser-plug-iz-magazina-prilozhenii-googl>
+Код и тексты репозитория — MIT, см. [LICENSE](LICENSE). КриптоПро CSP, CAdES,
+Контур.Плагин и Chromium-Gost — отдельные продукты со своими лицензиями; их
+дистрибутивы в репозиторий не входят. Корневой сертификат Минцифры — публичный,
+взят с gosuslugi.ru/crt.

@@ -30,3 +30,6 @@ tmp/
 logs/
 *.log
 
+
+# Public root CA of the Ministry of Digital Development (from gosuslugi.ru/crt)
+!certs/*.pem

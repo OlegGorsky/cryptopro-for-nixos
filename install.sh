@@ -3,11 +3,13 @@ set -Eeuo pipefail
 
 PROJECT="CryptoPro for NixOS"
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/OlegGorsky/cryptopro-for-nixos/main}"
-MODULE_URL="${MODULE_URL:-$RAW_BASE/cryptopro-for-nixos.nix}"
+MODULE_URL="${MODULE_URL:-$RAW_BASE/nixos/cryptopro.nix}"
 NIXOS_CONFIG="${NIXOS_CONFIG:-/etc/nixos/configuration.nix}"
 NIXOS_MODULE_TARGET="${NIXOS_MODULE_TARGET:-/etc/nixos/cryptopro-for-nixos.nix}"
 STATE_DIR="/var/lib/cryptopro-for-nixos"
 STATE_FILE="$STATE_DIR/state.env"
+CHROMIUM_GOST_DIR="${CHROMIUM_GOST_DIR:-/opt/chromium-gost}"
+CHROMIUM_GOST_REPO="${CHROMIUM_GOST_REPO:-deemru/chromium-gost}"
 
 CSP_PATTERNS=(
   "lsb-cprocsp-base_*.deb"
@@ -76,6 +78,9 @@ check_nixos() {
 dpkg_deb() {
   if command -v dpkg-deb >/dev/null 2>&1; then
     dpkg-deb "$@"
+  elif command -v nix-shell >/dev/null 2>&1 && nix-instantiate --find-file nixpkgs >/dev/null 2>&1; then
+    # Локальный канал системы: не нужно скачивать nixpkgs целиком.
+    nix-shell -p dpkg --run "dpkg-deb $(printf '%q ' "$@")"
   elif command -v nix >/dev/null 2>&1; then
     nix shell nixpkgs#dpkg -c dpkg-deb "$@"
   else
@@ -171,6 +176,7 @@ version_from_deb() {
 load_state() {
   CPROCSP_VERSION=""
   CADES_VERSION=""
+  CHROMIUM_GOST_VERSION=""
   if [[ -f "$STATE_FILE" ]]; then
     # shellcheck disable=SC1090
     . "$STATE_FILE"
@@ -180,10 +186,16 @@ load_state() {
 save_state() {
   local csp_version="$1"
   local cades_version="$2"
+  local gost_version="${3-}"
+  if [[ $# -lt 3 ]]; then
+    load_state
+    gost_version="$CHROMIUM_GOST_VERSION"
+  fi
   mkdir -p "$STATE_DIR"
   cat > "$STATE_FILE" <<EOF
 CPROCSP_VERSION="$csp_version"
 CADES_VERSION="$cades_version"
+CHROMIUM_GOST_VERSION="$gost_version"
 EOF
 }
 
@@ -315,8 +327,30 @@ extract_trial_license() {
   printf '%s\n' "$trial"
 }
 
+normalize_serial() {
+  printf '%s' "$1" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]'
+}
+
+set_license() {
+  local serial
+  serial="$(normalize_serial "$1")"
+  [[ "$serial" =~ ^[0-9A-Z]{5}(-[0-9A-Z]{5}){4}$ ]] \
+    || die "серийный номер должен быть в формате XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+  [[ -x /opt/cprocsp/sbin/amd64/cpconfig ]] || die "CryptoPro CSP ещё не установлен: сначала выполните sudo bash install.sh"
+
+  log "Ввожу серийный номер CryptoPro CSP"
+  cpconfig_raw -license -set "$serial" || die "cpconfig не принял серийный номер"
+  cpconfig_raw -license -view
+}
+
 ensure_license() {
   local csp_root="${1:-}"
+
+  if [[ -n "${CRYPTOPRO_SERIAL:-}" ]]; then
+    set_license "$CRYPTOPRO_SERIAL"
+    return 0
+  fi
+
   if cpconfig_raw -license -view >/dev/null 2>&1; then
     log "Лицензия CryptoPro CSP уже доступна"
     cpconfig_raw -license -view || true
@@ -329,25 +363,40 @@ ensure_license() {
   fi
 
   if [[ -z "$trial" ]]; then
-    warn "Лицензия CSP недоступна, а demo-серийник не удалось извлечь из пакета."
-    warn "Если у вас есть серийный номер, выполните: sudo cpconfig -license -set <серийный_номер>"
+    warn "Лицензия CSP не найдена, а временный ключ не удалось взять из дистрибутива."
+    warn "Введите серийный номер: sudo bash install.sh license"
     return 1
   fi
 
-  log "Включаю встроенную demo-лицензию из дистрибутива CSP"
-  cpconfig_raw -license -set "$trial" -use_expired || true
-  cpconfig_raw -license -view || {
-    warn "Не удалось активировать demo-лицензию. Возможно, нужен актуальный дистрибутив CSP или ручной серийный номер."
+  # Тот же временный ключ, который ставит postinst официального deb-пакета.
+  # Истёкший пробный период скрипт не продлевает.
+  log "Включаю временную лицензию из дистрибутива CSP"
+  cpconfig_raw -license -set "$trial" >/dev/null 2>&1 || true
+  if ! cpconfig_raw -license -view; then
+    warn "Временная лицензия не активировалась: вероятно, пробный период уже закончился."
+    warn "Введите серийный номер: sudo bash install.sh license"
     return 1
-  }
+  fi
+}
+
+license_command() {
+  need_root
+  check_nixos
+  local serial="${1:-${CRYPTOPRO_SERIAL:-}}"
+  if [[ -z "$serial" ]]; then
+    [[ -r /dev/tty ]] || die "передайте серийный номер: sudo bash install.sh license XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+    printf 'Серийный номер КриптоПро CSP: ' >/dev/tty
+    IFS= read -r serial </dev/tty
+  fi
+  set_license "$serial"
 }
 
 install_nixos_module() {
   log "Устанавливаю NixOS-модуль"
   mkdir -p "$(dirname "$NIXOS_MODULE_TARGET")"
 
-  if [[ -f "./cryptopro-for-nixos.nix" ]]; then
-    install -m 0644 ./cryptopro-for-nixos.nix "$NIXOS_MODULE_TARGET"
+  if [[ -f "./nixos/cryptopro.nix" ]]; then
+    install -m 0644 ./nixos/cryptopro.nix "$NIXOS_MODULE_TARGET"
   else
     curl -fsSL "$MODULE_URL" -o "$NIXOS_MODULE_TARGET"
     chmod 0644 "$NIXOS_MODULE_TARGET"
@@ -419,6 +468,135 @@ JSON
   "external_update_url": "https://clients2.google.com/service/update2/crx"
 }
 JSON
+}
+
+search_chromium_gost_deb() {
+  local forced="${CHROMIUM_GOST_DEB:-}"
+  if [[ -n "$forced" ]]; then
+    [[ -f "$forced" ]] || die "CHROMIUM_GOST_DEB указывает на несуществующий файл: $forced"
+    printf '%s\n' "$forced"
+    return 0
+  fi
+
+  local user home found
+  user="$(target_user)"
+  home="$(target_home "$user")"
+  found="$(
+    find "$PWD" "$home/Загрузки" "$home/Downloads" -maxdepth 3 -type f \
+      -name 'chromium-gost-*-linux-amd64.deb' -printf '%T@ %p\n' 2>/dev/null \
+      | sort -nr \
+      | awk 'NR == 1 { $1=""; sub(/^ /, ""); print }'
+  )"
+  [[ -n "$found" ]] || return 1
+  printf '%s\n' "$found"
+}
+
+download_chromium_gost_deb() {
+  local api="https://api.github.com/repos/$CHROMIUM_GOST_REPO/releases/latest"
+  local url out
+  url="$(
+    curl -fsSL --connect-timeout 20 "$api" \
+      | grep -oE '"browser_download_url": *"[^"]*chromium-gost-[^"]*-linux-amd64\.deb"' \
+      | head -n 1 \
+      | sed -E 's/.*"(https[^"]+)"$/\1/'
+  )" || return 1
+  [[ -n "$url" ]] || return 1
+
+  mkdir -p "$STATE_DIR/downloads"
+  out="$STATE_DIR/downloads/$(basename "$url")"
+  log "Скачиваю Chromium-Gost: $url"
+  curl -fL --retry 2 --connect-timeout 20 -o "$out" "$url" || return 1
+  printf '%s\n' "$out"
+}
+
+install_chromium_gost_desktop() {
+  local user home group dir file
+  user="$(target_user)"
+  [[ "$user" == "root" ]] && return 0
+  home="$(target_home "$user")"
+  group="$(id -gn "$user")"
+  dir="$home/.local/share/applications"
+  file="$dir/chromium-gost.desktop"
+
+  install -d -o "$user" -g "$group" "$home/.local" "$home/.local/share" "$dir"
+  if [[ -f "$file" ]] && ! grep -q 'cryptopro-for-nixos' "$file"; then
+    cp -a "$file" "$file.backup-$(date +%Y%m%d-%H%M%S)"
+  fi
+
+  cat > "$file" <<EOF
+[Desktop Entry]
+# managed by cryptopro-for-nixos
+Version=1.0
+Type=Application
+Name=Chromium-Gost
+GenericName=Web Browser
+Comment=Браузер с ГОСТ TLS на КриптоПро CSP
+Exec=/run/current-system/sw/bin/chromium-gost %U
+Icon=$CHROMIUM_GOST_DIR/product_logo_256.png
+Terminal=false
+StartupNotify=true
+StartupWMClass=chromium-gost
+Categories=Network;WebBrowser;
+MimeType=text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=Новое окно
+Exec=/run/current-system/sw/bin/chromium-gost
+
+[Desktop Action new-private-window]
+Name=Новое окно в режиме инкогнито
+Exec=/run/current-system/sw/bin/chromium-gost --incognito
+EOF
+  chown "$user:$group" "$file"
+  chmod 0644 "$file"
+}
+
+install_chromium_gost() {
+  local mode="${CHROMIUM_GOST:-auto}"
+  [[ "$mode" == "0" ]] && return 0
+
+  local deb=""
+  if deb="$(search_chromium_gost_deb)"; then
+    log "Найден пакет Chromium-Gost: $deb"
+  elif [[ "$mode" == "1" ]]; then
+    deb="$(download_chromium_gost_deb)" \
+      || die "не удалось скачать Chromium-Gost. Скачайте linux-amd64.deb с https://github.com/$CHROMIUM_GOST_REPO/releases и передайте CHROMIUM_GOST_DEB=/path"
+  else
+    if [[ ! -x "$CHROMIUM_GOST_DIR/chrome" ]]; then
+      log "Chromium-Gost не найден, пропускаю. Чтобы скачать последнюю версию: sudo CHROMIUM_GOST=1 bash install.sh"
+    fi
+    return 0
+  fi
+
+  local version=""
+  if [[ "$(basename "$deb")" =~ chromium-gost-([0-9.]+)-linux ]]; then
+    version="${BASH_REMATCH[1]}"
+  fi
+
+  load_state
+  if [[ "${FORCE:-0}" != "1" && -x "$CHROMIUM_GOST_DIR/chrome" && -n "$version" ]] \
+    && ! version_is_newer "$version" "$CHROMIUM_GOST_VERSION"; then
+    log "Chromium-Gost $CHROMIUM_GOST_VERSION уже установлен, пакет $version не новее"
+    install_chromium_gost_desktop
+    return 0
+  fi
+
+  local tmp
+  tmp="$(mktemp -d)"
+  log "Распаковываю Chromium-Gost ${version}"
+  dpkg_deb -x "$deb" "$tmp"
+  [[ -x "$tmp/opt/chromium-gost/chrome" ]] || die "в пакете нет opt/chromium-gost/chrome"
+
+  mkdir -p "$(dirname "$CHROMIUM_GOST_DIR")"
+  rm -rf "$CHROMIUM_GOST_DIR.new"
+  mv "$tmp/opt/chromium-gost" "$CHROMIUM_GOST_DIR.new"
+  rm -rf "$CHROMIUM_GOST_DIR"
+  mv "$CHROMIUM_GOST_DIR.new" "$CHROMIUM_GOST_DIR"
+  rm -rf "$tmp"
+
+  save_state "$CPROCSP_VERSION" "$CADES_VERSION" "$version"
+  install_chromium_gost_desktop
 }
 
 install_archives() {
@@ -522,7 +700,7 @@ checkup() {
 
   local failed=0
 
-  printf '\n[1/7] NixOS: '
+  printf '\n[1/8] NixOS: '
   if [[ -r /etc/os-release ]] && grep -q '^ID=nixos' /etc/os-release; then
     echo "ok"
   else
@@ -530,7 +708,7 @@ checkup() {
     failed=1
   fi
 
-  printf '[2/7] Команды CryptoPro: '
+  printf '[2/8] Команды CryptoPro: '
   local cmd missing=()
   for cmd in cpconfig csptest certmgr cryptcp nmcades; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
@@ -542,7 +720,7 @@ checkup() {
     failed=1
   fi
 
-  printf '[3/7] Лицензия CSP: '
+  printf '[3/8] Лицензия CSP: '
   if command -v cpconfig >/dev/null 2>&1 && cpconfig -license -view >/tmp/cryptopro-license-check.txt 2>&1; then
     echo "ok"
     sed 's/^/      /' /tmp/cryptopro-license-check.txt
@@ -552,7 +730,7 @@ checkup() {
     failed=1
   fi
 
-  printf '[4/7] Chrome native host: '
+  printf '[4/8] Chrome native host: '
   if [[ -f /etc/opt/chrome/native-messaging-hosts/ru.cryptopro.nmcades.json ]]; then
     echo "ok"
   else
@@ -560,24 +738,37 @@ checkup() {
     failed=1
   fi
 
-  printf '[5/7] Расширение Chrome: '
+  printf '[5/8] Расширение Chrome: '
   if [[ -f /opt/google/chrome/extensions/pfhgbfnnjiafkhfdkmpiflachepdcjod.json || -f /opt/google/chrome/extensions/iifchhfnnmpdbibifmljnfjhpififfog.json ]]; then
     echo "ok"
   else
     echo "не настроено автоподключение; расширение можно поставить вручную из Chrome Web Store"
   fi
 
-  printf '[6/7] Рутокен: '
+  printf '[6/8] Chromium-Gost: '
+  if [[ -x "$CHROMIUM_GOST_DIR/chrome" ]]; then
+    load_state
+    if [[ -f /etc/chromium/native-messaging-hosts/ru.cryptopro.nmcades.json ]]; then
+      echo "ok ${CHROMIUM_GOST_VERSION}"
+    else
+      echo "установлен, но нет /etc/chromium/native-messaging-hosts (нужен nixos-rebuild switch)"
+      failed=1
+    fi
+  else
+    echo "не установлен (необязательно: sudo CHROMIUM_GOST=1 bash install.sh)"
+  fi
+
+  printf '[7/8] Рутокен: '
   if token_present; then
     echo "вставлен"
   else
-    echo "ключ не вставлен в ноутбук"
+    echo "ключ не вставлен"
     return "$failed"
   fi
 
   install_cert_from_single_container
 
-  printf '[7/7] Контейнеры и сертификаты:\n'
+  printf '[8/8] Контейнеры и сертификаты:\n'
   if command -v csptest >/dev/null 2>&1; then
     csptest -keyset -enum_cont -fqcn -verifycontext 2>&1 | sed 's/^/      /' || failed=1
   fi
@@ -594,12 +785,13 @@ main_install() {
   mkdir -p "$STATE_DIR"
 
   install_archives
+  install_chromium_gost
   install_nixos_module
   install_chrome_files_imperative
   switch_nixos
   checkup
 
-  log "Готово. Перезапустите Google Chrome и установите/включите расширение CAdES Browser plug-in, если Chrome сам его не подтянул."
+  log "Готово. Перезапустите браузер (Google Chrome или Chromium-Gost) и включите расширение CAdES Browser plug-in, если он сам его не подтянул."
 }
 
 usage() {
@@ -608,6 +800,7 @@ $PROJECT
 
 Использование:
   sudo bash install.sh              установить/обновить и выполнить чекап
+  sudo bash install.sh license      ввести серийный номер КриптоПро CSP
   bash install.sh check             только чекап
 
 Переменные:
@@ -615,14 +808,23 @@ $PROJECT
   CADES_ARCHIVE=/path/cades-linux-amd64.tar.gz
   CSP_URL=https://...
   CADES_URL=https://...
+  CRYPTOPRO_SERIAL=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+  CHROMIUM_GOST=1                   скачать/обновить Chromium-Gost с GitHub
+  CHROMIUM_GOST=0                   не трогать Chromium-Gost
+  CHROMIUM_GOST_DEB=/path/chromium-gost-...-linux-amd64.deb
   NO_REBUILD=1
   NO_INSTALL_CERT=1
+  FORCE=1
 EOF
 }
 
 case "${1:-install}" in
   install)
     main_install
+    ;;
+  license)
+    shift
+    license_command "${1:-}"
     ;;
   check|doctor)
     check_nixos
